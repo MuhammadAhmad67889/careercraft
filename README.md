@@ -5,7 +5,7 @@ description with a transparent score breakdown, check ATS compatibility, generat
 cover letters, track applications, search your saved jobs, practise interviews,
 plan a roadmap, and improve a LinkedIn profile.
 
-Live demo: link will be added here once deployed.
+Live demo: https://careercraft-blue.vercel.app
 
 ## Demo login
 
