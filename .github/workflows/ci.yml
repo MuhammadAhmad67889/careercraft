@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "file:./test.db"
+      AUTH_SECRET: "ci-test-secret-not-used-in-production"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      # The test suite pushes the schema into throwaway SQLite files.
+      # Production uses Postgres, so swap the provider for tests only.
+      - run: sed -i 's/provider = "postgresql"/provider = "sqlite"/' prisma/schema.prisma
+      - run: npx prisma generate
+      - run: npm test
