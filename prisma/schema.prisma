@@ -1,0 +1,532 @@
+// Prisma schema for CareerCraft (Phase 1: foundation, Phase 2: resumes,
+// Phase 3: job matching + ATS, Phase 4: cover letters + applications,
+// Phase 5: mock interviews + roadmaps + LinkedIn optimizer).
+//
+// The committed schema targets Neon Postgres (production). The
+// test suite runs against throwaway SQLite files, so CI swaps
+// the provider line below to "sqlite" before generating the
+// client and running tests (see .github/workflows/ci.yml). For
+// local SQLite dev, make the same one-line swap and point
+// DATABASE_URL at a file: URL. To keep ONE schema working on
+// both, statuses are plain String fields with named constants in
+// code (SQLite has no enum type), and there are no scalar lists or
+// Json columns — list-like profile fields are stored as
+// comma-separated strings, and resume section content is stored as
+// a JSON *string* column that is validated with Zod on every read
+// and write (see src/lib/resumeData.ts).
+//
+// Every user-owned row carries userId and every query is
+// user-scoped. The isolation tests in src/lib/isolation.test.ts
+// prove one user cannot reach another user's rows.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  // Subscription plan: "free" | "pro" | "premium" (demo billing —
+  // limits are enforced server-side, no real charges happen).
+  plan         String   @default("free")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions    Session[]
+  resetTokens PasswordResetToken[]
+  profile     UserProfile?
+  auditLogs   AuditLog[]
+  resumes     Resume[]
+  jobDescriptions JobDescription[]
+  duplicateDismissals DuplicateDismissal[]
+  jobAnalyses JobAnalysis[]
+  atsReports  ATSReport[]
+  usageRecords UsageRecord[]
+  coverLetters CoverLetter[]
+  applications JobApplication[]
+  interviewSessions InterviewSession[]
+  roadmaps    CareerRoadmap[]
+  linkedinAnalyses LinkedInAnalysis[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Password reset tokens: only the hash is stored, one hour TTL,
+// single use (usedAt set when consumed).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// The career profile collected during onboarding. One per user.
+// List-like fields (skills, industries, ...) are comma-separated
+// strings because the schema must stay SQLite/Postgres compatible
+// (no scalar lists). Helpers in src/lib/profile.ts convert between
+// the stored string and a string array.
+model UserProfile {
+  id       String @id @default(cuid())
+  userId   String @unique
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Step 1 — personal
+  fullName String @default("")
+  country  String @default("")
+  city     String @default("")
+  headline String @default("")
+
+  // Step 2 — career
+  employmentStatus  String @default("")
+  currentPosition   String @default("")
+  experienceLevel   String @default("")
+  yearsExperience   Int    @default(0)
+  targetPosition    String @default("")
+  preferredIndustries String @default("")
+
+  // Step 3 — preferences
+  preferredCountries String @default("")
+  workMode           String @default("")
+  employmentType     String @default("")
+  salaryRange        String @default("")
+  jobCategories      String @default("")
+
+  // Step 4 — skills
+  technicalSkills String @default("")
+  softSkills      String @default("")
+  languages       String @default("")
+  certifications  String @default("")
+
+  // Onboarding progress: which step to resume at (0-based) and
+  // whether onboarding is finished or was skipped through.
+  onboardingStep Int     @default(0)
+  onboardingDone Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Security-relevant events (signup, login, failed login, password
+// reset, logout). userId is nullable because a failed login for an
+// unknown email has no user. Details never contain passwords or
+// tokens.
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// A resume. Section content lives in sectionsJson — a JSON string
+// column (not a Json type, so the schema stays SQLite/Postgres
+// compatible) that is parsed and validated with Zod on every read
+// and write. enabledSections is a comma-separated list of section
+// ids the user has switched on. reviewText holds upload text the
+// extractor could not place into a section, so nothing the user
+// uploaded is silently dropped.
+model Resume {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String
+  template        String   @default("modern")
+  sectionsJson    String
+  enabledSections String   @default("")
+  sourceFileName  String?
+  reviewText      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  versions ResumeVersion[]
+  analyses JobAnalysis[]
+  atsReports ATSReport[]
+  coverLetters CoverLetter[]
+  applications JobApplication[]
+  interviewSessions InterviewSession[]
+
+  @@index([userId, updatedAt])
+}
+
+// A snapshot of a resume taken on save and on PDF export, so an
+// earlier state can always be recovered. snapshotJson stores the
+// full resume payload (title, template, sections, enabled list).
+model ResumeVersion {
+  id           String   @id @default(cuid())
+  resumeId     String
+  resume       Resume   @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  userId       String
+  snapshotJson String
+  reason       String
+  createdAt    DateTime @default(now())
+
+  @@index([resumeId, createdAt])
+  @@index([userId])
+}
+
+// One row per metered action (resume created, AI improve run, ...)
+// so plan limits can be enforced and shown honestly. kind is a
+// plain string with named constants in code.
+model UsageRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, kind, createdAt])
+}
+
+// A job description the user saved (pasted, or imported from a
+// URL on a best-effort basis). rawText is the full posting text;
+// parsedJson holds the structured parse (required/preferred
+// skills, experience, education, responsibilities) as a JSON
+// string validated with Zod on every read and write (see
+// src/lib/jobData.ts). parseMode records how the parse was made:
+// "heuristics" (built-in rules, demo mode) or "ai" (live model).
+// location is what the user typed when saving (e.g. "Remote",
+// "Lahore") — it powers the Job Search location filter.
+model JobDescription {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  company    String   @default("")
+  location   String   @default("")
+  sourceUrl  String?
+  rawText    String
+  parsedJson String
+  parseMode  String   @default("heuristics")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  analyses   JobAnalysis[]
+  atsReports ATSReport[]
+  coverLetters CoverLetter[]
+  applications JobApplication[]
+  interviewSessions InterviewSession[]
+  dismissalsAsA DuplicateDismissal[] @relation("DismissalJobA")
+  dismissalsAsB DuplicateDismissal[] @relation("DismissalJobB")
+
+  @@index([userId, updatedAt])
+}
+
+// One "these two saved jobs are NOT duplicates" decision by the
+// user (Job Search duplicate detection). jobIdA/jobIdB are stored
+// in sorted order so each pair has exactly one row. Dismissed
+// pairs never reappear as possible duplicates. Rows cascade away
+// when either job is deleted (e.g. by a merge).
+model DuplicateDismissal {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobIdA    String
+  jobA      JobDescription @relation("DismissalJobA", fields: [jobIdA], references: [id], onDelete: Cascade)
+  jobIdB    String
+  jobB      JobDescription @relation("DismissalJobB", fields: [jobIdB], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+
+  @@unique([userId, jobIdA, jobIdB])
+  @@index([userId])
+}
+
+// One run of the matching engine: a resume scored against a job
+// description. resultJson holds the full breakdown (component
+// scores, matched/missing skills, strengths, recommendations) as
+// a Zod-validated JSON string; overallScore is duplicated as a
+// column so lists can sort and display without parsing. Scores
+// are transparent estimates — never a real ATS ranking.
+model JobAnalysis {
+  id               String         @id @default(cuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resumeId         String
+  resume           Resume         @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  jobDescriptionId String
+  jobDescription   JobDescription @relation(fields: [jobDescriptionId], references: [id], onDelete: Cascade)
+  overallScore     Int
+  resultJson       String
+  createdAt        DateTime       @default(now())
+
+  @@index([userId, createdAt])
+  @@index([jobDescriptionId, createdAt])
+  @@index([resumeId, createdAt])
+}
+
+// One ATS compatibility check of a resume, optionally against a
+// job description (for keyword coverage). resultJson holds the
+// checks, warnings and prioritized recommendations as a
+// Zod-validated JSON string; documentScore is duplicated as a
+// column for listing. ATS behaviour varies by employer — these
+// scores are estimates, never a pass guarantee.
+model ATSReport {
+  id               String          @id @default(cuid())
+  userId           String
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resumeId         String
+  resume           Resume          @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  jobDescriptionId String?
+  jobDescription   JobDescription? @relation(fields: [jobDescriptionId], references: [id], onDelete: SetNull)
+  documentScore    Int
+  resultJson       String
+  createdAt        DateTime        @default(now())
+
+  @@index([userId, createdAt])
+  @@index([resumeId, createdAt])
+}
+
+// A cover letter generated from one of the user's resumes,
+// optionally aimed at a saved job description. When there is no
+// job description, companyName/positionTitle hold what the user
+// typed by hand. generationMode records how the first draft was
+// made: "demo" (built-in template from the user's own resume
+// facts, no API key) or "live" (model-written, facts only from
+// the resume). The mode is shown in the UI so demo text is never
+// dressed up as AI. bodyText is plain text; paragraphs are
+// separated by blank lines.
+model CoverLetter {
+  id               String          @id @default(cuid())
+  userId           String
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resumeId         String
+  resume           Resume          @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  jobDescriptionId String?
+  jobDescription   JobDescription? @relation(fields: [jobDescriptionId], references: [id], onDelete: SetNull)
+  title            String
+  tone             String          @default("Professional")
+  bodyText         String
+  generationMode   String          @default("demo")
+  companyName      String          @default("")
+  positionTitle    String          @default("")
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  versions     CoverLetterVersion[]
+  applications JobApplication[]
+
+  @@index([userId, updatedAt])
+  @@index([resumeId, createdAt])
+}
+
+// A snapshot of a cover letter taken on every save, so an earlier
+// draft can always be recovered. snapshotJson stores the full
+// payload (title, tone, bodyText).
+model CoverLetterVersion {
+  id            String      @id @default(cuid())
+  coverLetterId String
+  coverLetter   CoverLetter @relation(fields: [coverLetterId], references: [id], onDelete: Cascade)
+  userId        String
+  snapshotJson  String
+  reason        String
+  createdAt     DateTime    @default(now())
+
+  @@index([coverLetterId, createdAt])
+  @@index([userId])
+}
+
+// One tracked job application. status is a plain String validated
+// in code against the nine pipeline stages (Saved, Applied,
+// Screening, Assessment, Interview, Offer, Accepted, Rejected,
+// Withdrawn) — see src/lib/applications.ts. Every status change
+// writes an ApplicationStatusHistory row, which powers the detail
+// timeline and the conversion analytics. Linked records
+// (jobDescription, resume, coverLetter) use SetNull so deleting
+// one never deletes the application itself.
+model JobApplication {
+  id               String          @id @default(cuid())
+  userId           String
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company          String
+  position         String
+  jobDescriptionId String?
+  jobDescription   JobDescription? @relation(fields: [jobDescriptionId], references: [id], onDelete: SetNull)
+  jobUrl           String?
+  location         String          @default("")
+  salaryRange      String          @default("")
+  employmentType   String          @default("")
+  appliedDate      DateTime?
+  resumeId         String?
+  resume           Resume?         @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  coverLetterId    String?
+  coverLetter      CoverLetter?    @relation(fields: [coverLetterId], references: [id], onDelete: SetNull)
+  recruiterName    String          @default("")
+  recruiterEmail   String          @default("")
+  notes            String          @default("")
+  status           String          @default("Saved")
+  // Simple interview scheduling until the Phase 5 interview
+  // module exists: one date plus a free-text note.
+  interviewDate    DateTime?
+  interviewNote    String          @default("")
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  history ApplicationStatusHistory[]
+
+  @@index([userId, updatedAt])
+  @@index([userId, status])
+}
+
+// One status change on an application. fromStatus is null for the
+// first row (creation). changedAt is the moment of the change.
+model ApplicationStatusHistory {
+  id            String         @id @default(cuid())
+  applicationId String
+  application   JobApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fromStatus    String?
+  toStatus      String
+  changedAt     DateTime       @default(now())
+
+  @@index([applicationId, changedAt])
+}
+
+// One mock interview practice session. interviewType is a plain
+// String validated in code (technical, behavioral, hr,
+// system-design, situational). status is "active" until the last
+// question is answered, then "completed". generationMode records
+// how the questions were made: "demo" (built-in question bank, no
+// API key) or "live" (model-written). Linked records use SetNull
+// so deleting a resume or job never deletes the session. Feedback
+// in this app is practice guidance only — it never claims to
+// measure personality or employability.
+model InterviewSession {
+  id               String          @id @default(cuid())
+  userId           String
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobDescriptionId String?
+  jobDescription   JobDescription? @relation(fields: [jobDescriptionId], references: [id], onDelete: SetNull)
+  resumeId         String?
+  resume           Resume?         @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  interviewType    String
+  status           String          @default("active")
+  generationMode   String          @default("demo")
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  questions InterviewQuestion[]
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+}
+
+// One question in a mock interview session. order is 1-based.
+// topic is a short label (e.g. "React", "Teamwork") used to build
+// the final report's suggested study topics.
+model InterviewQuestion {
+  id           String           @id @default(cuid())
+  sessionId    String
+  session      InterviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionText String
+  topic        String           @default("")
+  order        Int
+  createdAt    DateTime         @default(now())
+
+  feedback InterviewFeedback?
+
+  @@index([sessionId, order])
+}
+
+// The user's typed answer to one question plus the feedback on
+// it. scoresJson holds the per-dimension scores as a JSON string
+// validated with Zod on every read and write (see
+// src/lib/interviewData.ts). generationMode records whether the
+// feedback came from the built-in rule checks ("demo") or a live
+// model ("live") — demo feedback is labelled as basic checks,
+// never dressed up as expert evaluation.
+model InterviewFeedback {
+  id             String            @id @default(cuid())
+  questionId     String            @unique
+  question       InterviewQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  userId         String
+  answerText     String
+  scoresJson     String
+  feedbackText   String
+  generationMode String            @default("demo")
+  createdAt      DateTime          @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// One career roadmap: a study plan from a current role toward a
+// target role. planJson holds the structured plan (skill gaps,
+// learning order, practice suggestions) as a Zod-validated JSON
+// string; the week-by-week steps live in CareerMilestone rows so
+// progress can be ticked off. generationMode: "demo" (rule-based
+// gap analysis against the built-in role skill map, or an honest
+// generic plan when the role is not in the map) or "live". A
+// roadmap is a study plan only — it never promises employment.
+model CareerRoadmap {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currentRole     String   @default("")
+  targetRole      String
+  experienceLevel String   @default("")
+  hoursPerWeek    Int      @default(5)
+  timeline        String   @default("")
+  planJson        String
+  generationMode  String   @default("demo")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  milestones CareerMilestone[]
+
+  @@index([userId, updatedAt])
+}
+
+// One step in a roadmap. week is the planned week number
+// (1-based). done flips when the user marks the step complete.
+model CareerMilestone {
+  id        String        @id @default(cuid())
+  roadmapId String
+  roadmap   CareerRoadmap @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
+  title     String
+  week      Int
+  done      Boolean       @default(false)
+  createdAt DateTime      @default(now())
+
+  @@index([roadmapId, week])
+}
+
+// One LinkedIn profile analysis. The user pastes their own
+// profile text (headline, About, experience) — the app never
+// scrapes LinkedIn or touches an account. resultJson holds the
+// checks and suggestions as a Zod-validated JSON string.
+// generationMode: "demo" (rule-based checks + template
+// suggestions built only from the pasted text) or "live".
+model LinkedInAnalysis {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  inputText      String
+  targetRole     String   @default("")
+  resultJson     String
+  generationMode String   @default("demo")
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
