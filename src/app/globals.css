@@ -1,7 +1,3 @@
-/* Hallmark · shape: app screen + landing · genre: modern-minimal · theme: custom (project tokens in @theme below)
- * paper: #f8fafc · accent: #4f46e5 (indigo) · display: system sans · body: system sans
- * nav: sidebar (desktop) / drawer (mobile) · signature: honest empty states + profile completion ring
- * states: default, hover, focus-visible, active, disabled · axes: light/grotesk-sans/indigo · contrast: pass */
 @import "tailwindcss";
 
 /* Design tokens. One accent (indigo), slate neutrals, no gradients. */
